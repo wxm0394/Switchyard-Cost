@@ -1,0 +1,6 @@
+{
+  "name": "Switchyard 金额检测系统 (Market-Reference Cost Tracker)",
+  "description": "Switchyard 网关按 LiteLLM 市价估算 Token 花费的只读金额检测系统与管理面板（含 Go 源码交付包与实时聚合接口）",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
