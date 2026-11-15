@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   LITELLM_MODEL_PRICES,
-  costFor,
   type CostRange,
   type CostSummaryResponse,
 } from '../utils/costEngine';
@@ -12,14 +11,6 @@ interface CostViewProps {
   thirtyDaySummary: CostSummaryResponse;
   activeRange: CostRange;
   onRangeChange: (range: CostRange) => void;
-  onSimulateAudit: (payload: {
-    model_id: string;
-    prompt_tokens: number;
-    completion_tokens: number;
-    client_token_name: string;
-  }) => Promise<void>;
-  onResetAudit: () => Promise<void>;
-  isSubmittingSim: boolean;
 }
 
 function formatUSD(val: number | null | undefined): string {
@@ -52,19 +43,9 @@ export const CostView: React.FC<CostViewProps> = ({
   thirtyDaySummary,
   activeRange,
   onRangeChange,
-  onSimulateAudit,
-  onResetAudit,
-  isSubmittingSim,
 }) => {
   const [modelSearch, setModelSearch] = useState('');
   const [selectedBarDate, setSelectedBarDate] = useState<string | null>(null);
-
-  // Simulator form state (defaults to Spec 5.1 unit test 1 numbers: 1,000,000 in + 500,000 out on GLM-5.3-Flash-Free = $0.40)
-  const [simModel, setSimModel] = useState<string>('z-ai/glm-5.3-flash-free');
-  const [simPromptTokens, setSimPromptTokens] = useState<string>('1000000');
-  const [simCompletionTokens, setSimCompletionTokens] = useState<string>('500000');
-  const [simClientName, setSimClientName] = useState<string>('全客户端通用访问令牌');
-  const [simFeedback, setSimFeedback] = useState<string | null>(null);
 
   const activeSummary =
     activeRange === 'today'
@@ -88,30 +69,6 @@ export const CostView: React.FC<CostViewProps> = ({
     thirtyDaysSeries.find((d) => d.date === selectedBarDate) ||
     thirtyDaysSeries[thirtyDaysSeries.length - 1] ||
     null;
-
-  // Live preview of CostFor in simulator
-  const parsedPrompt = Math.max(0, Math.round(Number(simPromptTokens) || 0));
-  const parsedCompletion = Math.max(
-    0,
-    Math.round(Number(simCompletionTokens) || 0)
-  );
-  const simPreview = costFor(simModel, parsedPrompt, parsedCompletion);
-
-  const handleSimSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSimFeedback(null);
-    await onSimulateAudit({
-      model_id: simModel,
-      prompt_tokens: parsedPrompt,
-      completion_tokens: parsedCompletion,
-      client_token_name: simClientName,
-    });
-    setSimFeedback(
-      simPreview.ok
-        ? `已写入审计记录：${simModel} · 参考价 $${simPreview.costUsd.toFixed(4)}（实际扣费 $0.00）`
-        : `已写入审计记录：${simModel} · cost_usd = NULL（计入 unknown_price_tokens +${formatInt(parsedPrompt + parsedCompletion)}）`
-    );
-  };
 
   return (
     <div className="space-y-8">
@@ -478,7 +435,7 @@ export const CostView: React.FC<CostViewProps> = ({
         {/* 按客户端拆分 */}
         <section
           aria-label="按客户端令牌拆分"
-          className="lg:col-span-7 bg-white rounded-xl border border-slate-200 p-6 flex flex-col justify-between"
+          className="lg:col-span-12 bg-white rounded-xl border border-slate-200 p-6 flex flex-col justify-between"
         >
           <div>
             <div className="border-b border-slate-100 pb-4">
@@ -546,151 +503,6 @@ export const CostView: React.FC<CostViewProps> = ({
           </div>
         </section>
 
-        {/* 实时 CostFor 请求计价与审计写入模拟器 */}
-        <section
-          aria-label="CostFor 计价与审计写入验证器"
-          className="lg:col-span-5 bg-white rounded-xl border border-slate-200 p-6 flex flex-col justify-between"
-        >
-          <div>
-            <div className="border-b border-slate-100 pb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-base font-semibold text-slate-900">
-                  04. CostFor 实时计价与审计验证器
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  模拟网关成功分支（gateway.go:834）调用 CostFor 并写入审计表
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onResetAudit}
-                className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 border border-slate-200 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
-              >
-                重置演示数据
-              </button>
-            </div>
-
-            <form onSubmit={handleSimSubmit} className="mt-4 space-y-3.5">
-              <div>
-                <label
-                  htmlFor="sim-model-select"
-                  className="block text-xs font-medium text-slate-700 mb-1"
-                >
-                  选择路由模型 (selected_model_id)
-                </label>
-                <select
-                  id="sim-model-select"
-                  value={simModel}
-                  onChange={(e) => setSimModel(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-slate-900"
-                >
-                  {Object.values(LITELLM_MODEL_PRICES).map((m) => (
-                    <option key={m.model_id} value={m.model_id}>
-                      {m.model_id}{' '}
-                      {m.estimated ? '(估算)' : m.free_route ? '(免费路由)' : ''}
-                    </option>
-                  ))}
-                  <option value="custom/unpriced-local-llm">
-                    custom/unpriced-local-llm (未收录模型 → 测试 cost_usd = NULL)
-                  </option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label
-                    htmlFor="sim-prompt-tokens"
-                    className="block text-xs font-medium text-slate-700 mb-1"
-                  >
-                    Prompt Tokens (Input)
-                  </label>
-                  <input
-                    id="sim-prompt-tokens"
-                    type="number"
-                    min={0}
-                    step={1000}
-                    value={simPromptTokens}
-                    onChange={(e) => setSimPromptTokens(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="sim-completion-tokens"
-                    className="block text-xs font-medium text-slate-700 mb-1"
-                  >
-                    Completion Tokens (Output)
-                  </label>
-                  <input
-                    id="sim-completion-tokens"
-                    type="number"
-                    min={0}
-                    step={1000}
-                    value={simCompletionTokens}
-                    onChange={(e) => setSimCompletionTokens(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="sim-client-name"
-                  className="block text-xs font-medium text-slate-700 mb-1"
-                >
-                  客户端令牌名称 (client_token_name)
-                </label>
-                <select
-                  id="sim-client-name"
-                  value={simClientName}
-                  onChange={(e) => setSimClientName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-slate-900"
-                >
-                  <option value="全客户端通用访问令牌">全客户端通用访问令牌</option>
-                  <option value="RooCode 自动化研发工作流">RooCode 自动化研发工作流</option>
-                  <option value="Muse 验收与回归测试端">Muse 验收与回归测试端</option>
-                  <option value="CLI 终端日常助手">CLI 终端日常助手</option>
-                </select>
-              </div>
-
-              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1 font-mono tabular-nums">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">CostFor 返回值:</span>
-                  <span className="font-semibold text-slate-900">
-                    {simPreview.ok
-                      ? `cost = $${simPreview.costUsd.toFixed(6)}, ok = true`
-                      : `cost = 0, ok = false (写入 NULL)`}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">审计表写入值 (cost_usd):</span>
-                  <span className="font-semibold text-slate-900">
-                    {simPreview.ok ? `$${simPreview.costUsd.toFixed(4)}` : 'NULL'}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isSubmittingSim}
-                className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
-              >
-                {isSubmittingSim
-                  ? '正在写入审计并刷新汇总...'
-                  : '模拟成功请求并写入审计 (AddAudit)'}
-              </button>
-            </form>
-
-            {simFeedback && (
-              <p
-                role="status"
-                className="mt-3 text-xs text-emerald-700 font-medium"
-              >
-                {simFeedback}
-              </p>
-            )}
-          </div>
-        </section>
       </div>
     </div>
   );

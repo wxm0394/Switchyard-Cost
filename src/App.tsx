@@ -3,70 +3,48 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import { CostView } from './components/CostView';
 import { DeliverablesView } from './components/DeliverablesView';
 import { PricesAndRoutesView } from './components/PricesAndRoutesView';
-import {
-  LITELLM_MODEL_PRICES,
-  buildCostSummary,
-  costFor,
-  type AuditHistoryRecord,
-  type CostRange,
-  type CostSummaryResponse,
-} from './utils/costEngine';
-import { generateSeedAuditHistory } from './utils/seedData';
+import type { CostRange, CostSummaryResponse } from './utils/costEngine';
 
 type ActiveTab = 'cost' | 'routes' | 'prices' | 'deliverables';
 
-const REFERENCE_NOW_UTC = '2026-11-14T03:38:00Z';
+type ApiSummaries = {
+  today?: CostSummaryResponse;
+  '7d'?: CostSummaryResponse;
+  '30d'?: CostSummaryResponse;
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('cost');
   const [activeRange, setActiveRange] = useState<CostRange>('7d');
-  const [localRecords, setLocalRecords] = useState<AuditHistoryRecord[]>(() =>
-    generateSeedAuditHistory()
-  );
+  const [apiSummaries, setApiSummaries] = useState<ApiSummaries>({});
+  // Admin password lives in browser memory only (same model as panel-v2):
+  // never written to disk, never persisted, re-entered after a refresh.
+  const [adminPw, setAdminPw] = useState('');
+  const [pwInput, setPwInput] = useState('');
+  const [needAuth, setNeedAuth] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const [apiSummaries, setApiSummaries] = useState<{
-    today?: CostSummaryResponse;
-    '7d'?: CostSummaryResponse;
-    '30d'?: CostSummaryResponse;
-  }>({});
-  const [isSubmittingSim, setIsSubmittingSim] = useState(false);
-
-  // Local deterministic fallback summaries
-  const computedSummaries = useMemo(
-    () => ({
-      today: buildCostSummary(
-        localRecords,
-        'today',
-        REFERENCE_NOW_UTC,
-        LITELLM_MODEL_PRICES
-      ),
-      '7d': buildCostSummary(
-        localRecords,
-        '7d',
-        REFERENCE_NOW_UTC,
-        LITELLM_MODEL_PRICES
-      ),
-      '30d': buildCostSummary(
-        localRecords,
-        '30d',
-        REFERENCE_NOW_UTC,
-        LITELLM_MODEL_PRICES
-      ),
-    }),
-    [localRecords]
-  );
-
-  const fetchAllSummaries = async () => {
+  const fetchAllSummaries = async (pw: string) => {
+    setIsLoading(true);
+    setLoadError(null);
     try {
+      const headers = { 'X-Admin-Password': pw };
       const [rToday, r7d, r30d] = await Promise.all([
-        fetch('/api/gateway/cost/summary?range=today'),
-        fetch('/api/gateway/cost/summary?range=7d'),
-        fetch('/api/gateway/cost/summary?range=30d'),
+        fetch('/api/gateway/cost/summary?range=today', { headers }),
+        fetch('/api/gateway/cost/summary?range=7d', { headers }),
+        fetch('/api/gateway/cost/summary?range=30d', { headers }),
       ]);
+      if ([rToday, r7d, r30d].some((r) => r.status === 401 || r.status === 403)) {
+        setNeedAuth(true);
+        setAuthError('管理密码不对，请重新输入。');
+        return;
+      }
       if (rToday.ok && r7d.ok && r30d.ok) {
         const [today, sevenD, thirtyD] = await Promise.all([
           rToday.json(),
@@ -74,84 +52,48 @@ export default function App() {
           r30d.json(),
         ]);
         setApiSummaries({ today, '7d': sevenD, '30d': thirtyD });
+        setNeedAuth(false);
+        setAuthError(null);
+      } else {
+        const first = [rToday, r7d, r30d].find((r) => !r.ok);
+        let detail = '';
+        try {
+          detail = first ? `: ${(await first.json()).error ?? ''}` : '';
+        } catch {
+          // keep the status text only
+        }
+        setLoadError(
+          `接口返回 ${first?.status ?? '错误'}${detail}，请确认网关已部署带 cost/summary 的版本、历史库已有 cost_usd 列。`
+        );
       }
     } catch {
-      // Uses deterministic local calculation if offline or static preview
+      setLoadError('连不上网关接口，请检查网络与面板代理。');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  useEffect(() => {
-    void fetchAllSummaries();
-  }, []);
-
-  const todaySummary = apiSummaries.today || computedSummaries.today;
-  const sevenDaySummary = apiSummaries['7d'] || computedSummaries['7d'];
-  const thirtyDaySummary = apiSummaries['30d'] || computedSummaries['30d'];
-
-  const handleSimulateAudit = async (payload: {
-    model_id: string;
-    prompt_tokens: number;
-    completion_tokens: number;
-    client_token_name: string;
-  }) => {
-    setIsSubmittingSim(true);
-    try {
-      const res = await fetch('/api/gateway/simulate-audit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        await fetchAllSummaries();
-      }
-    } catch {
-      // Also update local state fallback
-    } finally {
-      const { costUsd, ok } = costFor(
-        payload.model_id,
-        payload.prompt_tokens,
-        payload.completion_tokens
-      );
-      const nextRec: AuditHistoryRecord = {
-        id: localRecords.length + 3000,
-        timestamp: REFERENCE_NOW_UTC,
-        selected_model_id: payload.model_id,
-        requested_model: payload.model_id,
-        prompt_tokens: payload.prompt_tokens,
-        completion_tokens: payload.completion_tokens,
-        billed_tokens: payload.prompt_tokens + payload.completion_tokens,
-        estimated_tokens: payload.prompt_tokens + payload.completion_tokens,
-        usage_source: 'upstream',
-        client_token_id: 'ct-sim',
-        client_token_name: payload.client_token_name,
-        session_key: `sim-${Date.now()}`,
-        cost_usd: ok ? costUsd : null,
-      };
-      setLocalRecords((prev) => [nextRec, ...prev]);
-      setIsSubmittingSim(false);
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pwInput.trim()) {
+      setAuthError('请输入管理密码。');
+      return;
     }
-  };
-
-  const handleResetAudit = async () => {
-    setIsSubmittingSim(true);
-    try {
-      await fetch('/api/gateway/reset-audit', { method: 'POST' });
-      await fetchAllSummaries();
-    } catch {
-      // fallback
-    } finally {
-      setLocalRecords(generateSeedAuditHistory());
-      setIsSubmittingSim(false);
-    }
+    setAdminPw(pwInput);
+    setAuthError(null);
+    await fetchAllSummaries(pwInput);
   };
 
   const handleExportCurrentJson = () => {
     const activeData =
       activeRange === 'today'
-        ? todaySummary
+        ? apiSummaries.today
         : activeRange === '7d'
-        ? sevenDaySummary
-        : thirtyDaySummary;
+        ? apiSummaries['7d']
+        : apiSummaries['30d'];
+    if (!activeData) {
+      return;
+    }
     const blob = new Blob([JSON.stringify(activeData, null, 2)], {
       type: 'application/json',
     });
@@ -162,6 +104,62 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  // Login gate: same model as panel-v2. No seed/demo data is ever shown:
+  // without the real API summaries the page shows this form, not numbers.
+  if (needAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-900 px-6">
+        <form
+          onSubmit={handleLogin}
+          className="w-full max-w-sm bg-white rounded-xl border border-slate-200 p-6 space-y-4"
+        >
+          <div>
+            <h1 className="text-lg font-bold tracking-tight">Switchyard 花费统计</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              请输入网关管理密码（与面板同一个）。密码只留在浏览器内存里，不会保存。
+            </p>
+          </div>
+          <div>
+            <label
+              htmlFor="admin-password"
+              className="block text-xs font-medium text-slate-700 mb-1"
+            >
+              管理密码
+            </label>
+            <input
+              id="admin-password"
+              type="password"
+              autoComplete="current-password"
+              value={pwInput}
+              onChange={(e) => setPwInput(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-slate-900"
+            />
+          </div>
+          {authError && (
+            <p role="alert" className="text-xs text-red-600 font-medium">
+              {authError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {isLoading ? '正在验证…' : '进入花费统计'}
+          </button>
+          {loadError && (
+            <p role="alert" className="text-xs text-red-600">
+              {loadError}
+            </p>
+          )}
+        </form>
+      </div>
+    );
+  }
+
+  const summariesReady =
+    apiSummaries.today && apiSummaries['7d'] && apiSummaries['30d'];
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
@@ -212,7 +210,15 @@ export default function App() {
           </nav>
 
           {/* Zone 3: 1 primary action */}
-          <div className="flex items-center shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void fetchAllSummaries(adminPw)}
+              disabled={isLoading}
+              className="px-3 py-2 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+            >
+              {isLoading ? '刷新中…' : '刷新'}
+            </button>
             <button
               type="button"
               onClick={handleExportCurrentJson}
@@ -226,18 +232,32 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 max-w-[1360px] w-full mx-auto px-6 py-8">
-        {activeTab === 'cost' && (
-          <CostView
-            todaySummary={todaySummary}
-            sevenDaySummary={sevenDaySummary}
-            thirtyDaySummary={thirtyDaySummary}
-            activeRange={activeRange}
-            onRangeChange={setActiveRange}
-            onSimulateAudit={handleSimulateAudit}
-            onResetAudit={handleResetAudit}
-            isSubmittingSim={isSubmittingSim}
-          />
+        {loadError && (
+          <p role="alert" className="mb-4 text-xs text-red-600">
+            {loadError}{' '}
+            <button
+              type="button"
+              onClick={() => void fetchAllSummaries(adminPw)}
+              className="underline font-medium"
+            >
+              重试
+            </button>
+          </p>
         )}
+        {activeTab === 'cost' &&
+          (summariesReady ? (
+            <CostView
+              todaySummary={apiSummaries.today!}
+              sevenDaySummary={apiSummaries['7d']!}
+              thirtyDaySummary={apiSummaries['30d']!}
+              activeRange={activeRange}
+              onRangeChange={setActiveRange}
+            />
+          ) : (
+            <p className="text-sm text-slate-500">
+              {isLoading ? '正在加载真实汇总…' : '暂无汇总数据，请点右上角“刷新”。'}
+            </p>
+          ))}
 
         {activeTab === 'routes' && <PricesAndRoutesView mode="routes" />}
 
@@ -253,7 +273,7 @@ export default function App() {
             Switchyard Gateway Cost Reference System · 参考价，按市价估算，非实际扣费
           </span>
           <span className="font-mono">
-            分支: muse/cost-tracking · 基准: main@ae648ec · 价格源: LiteLLM MIT
+            分支: muse/cost-tracking · 基准: main@91c022d5 · 价格源: LiteLLM MIT
           </span>
         </div>
       </footer>
