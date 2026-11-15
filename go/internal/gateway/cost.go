@@ -2,10 +2,7 @@ package gateway
 
 import (
 	"database/sql"
-	"encoding/json"
 	"math"
-	"net/http"
-	"os"
 	"sort"
 	"time"
 )
