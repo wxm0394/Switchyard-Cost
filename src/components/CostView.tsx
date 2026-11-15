@@ -205,7 +205,7 @@ export const CostView: React.FC<CostViewProps> = ({
               01. 按模型拆分参考花费（{activeRange === 'today' ? '今日' : activeRange === '7d' ? '近 7 天' : '近 30 天'}）
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              按参考价从高到低排序 · 免费路由按对应模型付费版市价折算 · 自托管同类估算标「估算」· 查不到价格标「价格未知」
+              按参考价从高到低排序 · 免费路由按对应模型付费版市价折算 · 自托管同类估算标「估算」· 本表只统计已计价的请求，未计价的不列入
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -327,7 +327,9 @@ export const CostView: React.FC<CostViewProps> = ({
                   合计（{filteredModels.length} 个模型）
                 </td>
                 <td className="py-3 px-4 text-slate-500 font-normal">
-                  未知价格 Token 单独统计：{formatInt(activeSummary.unknown_price_tokens)} tokens（不混入总价）
+                  {activeSummary.unknown_price_tokens > 0
+                    ? `未知价格 Token 单独统计：${formatInt(activeSummary.unknown_price_tokens)} tokens（不混入总价）`
+                    : '全部已计价'}
                 </td>
                 <td className="py-3 px-4 text-right font-mono tabular-nums">
                   {formatInt(activeSummary.total_requests)}
